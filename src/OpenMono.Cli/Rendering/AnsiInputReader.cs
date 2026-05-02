@@ -588,7 +588,12 @@ internal sealed class AnsiInputReader(
                 if (k.KeyChar is 'n' or 'N') return PermissionResponse.Deny;
                 if (k.KeyChar is 'a' or 'A') return PermissionResponse.AllowAll;
                 if (k.KeyChar == '!')         return PermissionResponse.DenyAll;
-                if (k.Key == ConsoleKey.Escape) return PermissionResponse.Deny;
+                if (k.Key == ConsoleKey.Escape)
+                {
+                    if (!Console.KeyAvailable) Thread.Sleep(12);
+                    if (Console.KeyAvailable) { TryReadMouseScroll(); continue; }
+                    return PermissionResponse.Deny;
+                }
 
                 if (k.Key == ConsoleKey.C && k.Modifiers.HasFlag(ConsoleModifiers.Control))
                 {
