@@ -289,3 +289,24 @@ ${YELLOW}To check tunnel status:${NC}  sudo systemctl status frpc
 ${YELLOW}To tail tunnel logs:${NC}      sudo journalctl -u frpc -f
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EOF
+
+# ── Notify relay server so the user gets connection instructions by email ──
+
+info "Sending connection instructions to your registered email..."
+CONNECT_ENDPOINT="$API_BASE/api/connection/connect"
+CONNECT_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X POST "$CONNECT_ENDPOINT" \
+    -H "Authorization: Bearer $RELAY_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"apiKey\": \"$LLAMA_API_KEY\"}")
+
+if [[ "$CONNECT_HTTP_CODE" == "200" ]]; then
+    ok "Connection instructions sent to your email."
+else
+    warn "Could not send connection email (HTTP $CONNECT_HTTP_CODE)."
+    warn "You can re-send manually with:"
+    warn "  curl -s -X POST $CONNECT_ENDPOINT \\"
+    warn "    -H 'Authorization: Bearer \$RELAY_TOKEN' \\"
+    warn "    -H 'Content-Type: application/json' \\"
+    warn "    -d '{\"apiKey\": \"<your-llama-api-key>\"}'"
+fi
