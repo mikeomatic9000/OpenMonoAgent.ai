@@ -168,8 +168,6 @@ cmd_setup() {
                 echo "A full log is written to ~/.openmono/logs/setup-<timestamp>.log"
                 echo ""
                 echo "Dual-box flow:"                
-                echo "  Sign up:       Visit https://app.openmonoagent.ai and sign up for a"
-                echo "                 FREE relay connection endpoint and api key."
                 echo "  Inference box: openmono setup --inference"
                 echo "                 openmono start"
                 echo "                 openmono tunnel setup"
@@ -182,29 +180,13 @@ cmd_setup() {
         esac
     done
 
+    # Source shared logging helpers for role_prompt function
+    _REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # shellcheck source=scripts/lib/log.sh
+    source "$_REPO_DIR/scripts/lib/log.sh"
+
     # Interactive role prompt when no --full/--inference/--agent flag was given
-    if [[ -z "${OPENMONO_ROLE:-}" ]]; then
-        echo ""
-        echo "  What do you want to install on this machine?"
-        echo ""
-        echo "  1) Both — agent + inference server on one box (single-box mode)"
-        echo "  2) Inference server only — GPU box that runs the model"
-        echo "             (pair with a separate agent box via openmono tunnel)"
-        echo "  3) Agent only — laptop/workstation that talks to a remote inference server"
-        echo "             (dual-box mode; point at inference box with openmono config)"
-        echo ""
-        while true; do
-            printf "  Enter 1, 2 or 3: "
-            read -r _role_choice
-            case "$_role_choice" in
-                1) export OPENMONO_ROLE=full      ; break ;;
-                2) export OPENMONO_ROLE=inference ; break ;;
-                3) export OPENMONO_ROLE=agent     ; break ;;
-                *) echo "  Please enter 1, 2, or 3." ;;
-            esac
-        done
-        echo ""
-    fi
+    role_prompt
 
     # Share one log file across both scripts
     export OPENMONO_LOG_DIR="${OPENMONO_LOG_DIR:-$HOME/.openmono/logs}"
@@ -222,6 +204,12 @@ cmd_setup() {
         Linux)
             _PREREQS_SCRIPT="$REPO_DIR/scripts/install_prereqs.sh"
             _INSTALL_SCRIPT="$REPO_DIR/scripts/install.sh"
+            # On Linux: if docker group membership is available but not active,
+            # re-exec ourselves with sg docker so the entire setup runs with
+            # the group active. This ensures docker is accessible after setup.
+            if command -v docker &>/dev/null && ! docker info &>/dev/null 2>&1 && id -nG 2>/dev/null | grep -qw docker; then
+                exec sg docker "$0" setup "$@"
+            fi
             ;;
         *)
             err "Unsupported OS: $_OS (supported: Linux, macOS/Darwin)"
@@ -233,12 +221,16 @@ cmd_setup() {
         err "Prerequisite install failed. Full log: $OPENMONO_LOG_FILE"
         exit 1
     }
+
+    # Use ~/.openmono/.tmp_install_env as the communication channel between install script and openmono
+    export OPENMONO_ENV_FILE="$HOME/.openmono/.tmp_install_env"
+    mkdir -p "$(dirname "$OPENMONO_ENV_FILE")"
     bash "$_INSTALL_SCRIPT" || {
         err "Installation failed. Full log: $OPENMONO_LOG_FILE"
         exit 1
     }
 
-    # Print setup complete message
+    # Print role-specific setup complete message
     echo ""
     printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
     printf "${BLUE}${BOLD}  Setup Complete${NC}\n"
@@ -246,13 +238,117 @@ cmd_setup() {
     echo ""
     echo -e "  ${GREEN}✓${NC} OpenMono.ai is ready to use!"
     echo ""
-    echo "  You can run now:"
-    echo -e "    ${BOLD}openmono agent${NC}                 # Run the agent"
-    echo -e "    ${BOLD}openmono config${NC}               # Configure settings"
-    echo -e "    ${BOLD}openmono --help${NC}               # Show all commands"
+
+    case "$OPENMONO_ROLE" in
+        full)
+            echo "  Your machine is configured for single-box mode (agent + inference)."
+            echo ""
+            echo "  Next steps:"
+            echo -e "    1. ${BOLD}cd your-project/${NC}"
+            echo -e "    2. ${BOLD}openmono agent${NC}                 # Start the agent"
+            echo ""
+            echo "  Other commands:"
+            echo -e "    ${BOLD}openmono status${NC}              # Show llama-server status"
+            echo -e "    ${BOLD}openmono config${NC}             # Configure settings"
+            echo ""
+            ;;
+        inference)
+            echo "  Your machine is configured as the inference server."
+            echo ""
+            echo "  Next steps:"
+            echo -e "    1. ${BOLD}openmono tunnel setup${NC}       # Connect to openmonoagent.ai relay"
+            echo -e "    2. Use the endpoint + API key from step 1 on your agent box"
+            echo ""
+            echo "  Other commands:"
+            echo -e "    ${BOLD}openmono start${NC}              # Start llama-server"
+            echo -e "    ${BOLD}openmono status${NC}             # Show server status"
+            echo -e "    ${BOLD}openmono logs${NC}               # Tail server logs"
+            echo ""
+            ;;
+        agent)
+            echo "  Your machine is configured as the agent (dual-box mode)."
+            echo ""
+            echo "  ${BOLD}⚠ Important: You must configure the remote inference server first.${NC}"
+            echo ""
+            echo "  If the inference server is on a remote machine, run these commands NOW:"
+            echo ""
+            echo -e "    ${BOLD}openmono config set llm.endpoint http://<server-ip>:<port>${NC}"
+            echo -e "    ${BOLD}openmono config set llm.api_key <your-api-key>${NC}"
+            echo ""
+            echo "  Example (replace with your actual relay address from openmonoagent.ai):"
+            echo -e "    ${BOLD}openmono config set llm.endpoint http://relay.openmonoagent.ai:17474${NC}"
+            echo -e "    ${BOLD}openmono config set llm.api_key abc123def456${NC}"
+            echo ""
+            echo "  Then run the agent:"
+            echo -e "    ${BOLD}cd your-project/${NC}"
+            echo -e "    ${BOLD}openmono agent${NC}"
+            echo ""
+            echo "  Check config with:"
+            echo -e "    ${BOLD}openmono config${NC}"
+            echo ""
+            ;;
+    esac
+
+    echo "  Troubleshooting:"
+    echo "    If openmono or docker are not found, reload your shell:"
+    if [ "$_OS" = "Linux" ]; then
+        echo -e "      ${BOLD}newgrp docker${NC}     # Activate docker group (Linux only)"
+    fi
+    echo -e "      ${BOLD}exec \$SHELL${NC}       # Reload shell"
     echo ""
+    echo "  Full help: openmono --help"
     printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
     echo ""
+
+    # Source environment variables written by install.sh (INSTALL_DIR, LLAMA_PORT, OPENMONO_ROLE)
+    if [[ -n "${OPENMONO_ENV_FILE:-}" ]] && [[ -f "$OPENMONO_ENV_FILE" ]]; then
+        # shellcheck source=/dev/null
+        source "$OPENMONO_ENV_FILE"
+    fi
+
+    # Fallback values if not set
+    INSTALL_DIR="${INSTALL_DIR:-$HOME/openmono.ai}"
+    LLAMA_PORT="${LLAMA_PORT:-7474}"
+
+    # Update shell rc files to add openmono to PATH
+    info "Updating shell configuration..."
+    while IFS= read -r rc_file; do
+        if [[ -f "$rc_file" ]]; then
+            # Remove any existing OpenMono block
+            if grep -q "# OpenMono.ai" "$rc_file" 2>/dev/null; then
+                sed -i.bak '/# OpenMono.ai/,/^$/d' "$rc_file"
+                rm -f "$rc_file.bak"
+            fi
+            # Add OpenMono PATH
+            {
+                echo ""
+                echo "# OpenMono.ai"
+                echo "export PATH=\"$INSTALL_DIR:\$PATH\""
+            } >> "$rc_file"
+            detail "Updated $(basename "$rc_file")"
+        fi
+    done < <(get_shell_rc_files)
+
+    # Initialize settings.json with defaults if it doesn't exist
+    local settings_dir="$HOME/.openmono"
+    local settings_file="$settings_dir/settings.json"
+    mkdir -p "$settings_dir"
+    if [[ ! -f "$settings_file" ]]; then
+        cat > "$settings_file" <<'EOF'
+{
+  "llm": {
+    "endpoint": "http://localhost:7474",
+    "api_key": ""
+  }
+}
+EOF
+        detail "Created $settings_file with defaults"
+    fi
+
+    # Restart the shell with updated PATH so openmono and docker are immediately available
+    # The docker group is already active in this process, and exec preserves it
+    export PATH="$INSTALL_DIR:$PATH"
+    exec "$SHELL"
 }
 
 cmd_start() {

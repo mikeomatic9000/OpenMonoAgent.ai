@@ -24,17 +24,7 @@ fi
 
 # Add openmono to PATH for current session
 export PATH="$REPO_DIR:$PATH"
-
-# Add to shell rc files for future sessions (Ubuntu/Linux)
-for rc_file in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    if [ -f "$rc_file" ] && ! grep -q "export PATH=.*$REPO_DIR" "$rc_file"; then
-        {
-            echo ""
-            echo "# OpenMono.ai CLI"
-            echo "export PATH=$REPO_DIR:\$PATH"
-        } >> "$rc_file"
-    fi
-done
+# (RC file updates are handled by openmono cmd_setup after installation completes)
 
 # Configurable NVIDIA driver version (default: 580-server-open)
 DRIVER_VERSION="${DRIVER_VERSION:-580-server-open}"
@@ -485,33 +475,7 @@ if [ "$HAS_NVIDIA_HW" = true ]; then
     check_installed nvidia-smi
 fi
 
-# Check if docker is accessible without sudo
-DOCKER_NEEDS_GROUP=false
-if command -v docker &>/dev/null; then
-    if ! docker info &>/dev/null 2>&1; then
-        DOCKER_NEEDS_GROUP=true
-    fi
-fi
-
 echo ""
 ok "Prerequisites ready"
-
-if [ "$DOCKER_NEEDS_GROUP" = true ]; then
-    echo ""
-    printf "${YELLOW}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-    printf "${YELLOW}${BOLD}  Docker Group Activation Required${NC}\n"
-    printf "${YELLOW}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-    echo ""
-    echo "  The 'sg' command could not activate the docker group automatically."
-    echo "  Run ONE of the following before running install.sh:"
-    echo ""
-    echo "    ${BOLD}newgrp docker${NC}              # Activate in current shell"
-    echo "    ${BOLD}exec su -l \$USER${NC}          # Start fresh login shell"
-    echo "    ${BOLD}Log out and back in${NC}        # Full session refresh"
-    echo ""
-    echo "  After activation, verify with: docker info"
-    echo "  Then run: ./scripts/install.sh"
-    echo ""
-fi
-
+echo ""
 show_log_location

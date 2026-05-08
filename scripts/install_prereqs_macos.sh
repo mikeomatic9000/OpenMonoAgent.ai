@@ -24,17 +24,7 @@ fi
 
 # Add openmono to PATH for current session
 export PATH="$REPO_DIR:$PATH"
-
-# Add to shell rc files for future sessions (macOS)
-for rc_file in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bash_profile"; do
-    if [ -f "$rc_file" ] && ! grep -q "export PATH=.*$REPO_DIR" "$rc_file"; then
-        {
-            echo ""
-            echo "# OpenMono.ai CLI"
-            echo "export PATH=$REPO_DIR:\$PATH"
-        } >> "$rc_file"
-    fi
-done
+# (RC file updates are handled by openmono cmd_setup after installation completes)
 
 TOTAL_STEPS=8
 
@@ -383,26 +373,5 @@ check_installed dotnet
 
 echo ""
 ok "Prerequisites ready"
-
-# Homebrew shell integration note
-if [ "$ARCH" = "arm64" ]; then
-    echo ""
-    printf "${YELLOW}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-    printf "${YELLOW}${BOLD}  Homebrew PATH Integration${NC}\n"
-    printf "${YELLOW}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-    echo ""
-    echo "  For Apple Silicon Macs, add Homebrew to your shell:"
-    echo ""
-    echo "    ${BOLD}eval \"\$(/opt/homebrew/bin/brew shellenv)\"${NC}"
-    echo ""
-    echo "  This is typically auto-added by Homebrew to:"
-    echo "    ~/.zprofile  (Zsh login shell)"
-    echo "    ~/.zshrc  (Zsh interactive shell)"
-    echo "    ~/.bash_profile  (Bash login shell)"
-    echo ""
-    echo "  Reload your shell if Homebrew commands are not found:"
-    echo "    ${BOLD}exec zsh${NC}  or  ${BOLD}exec bash${NC}"
-    echo ""
-fi
-
+echo ""
 show_log_location

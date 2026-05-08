@@ -141,3 +141,60 @@ show_log_location() {
     echo ""
     printf "${DIM}Full log: %s${NC}\n" "$OPENMONO_LOG_FILE"
 }
+
+# get_shell_rc_files — output rc file paths for the user's current shell
+# Outputs one file per line
+get_shell_rc_files() {
+    local shell_name
+    shell_name=$(basename "$SHELL")
+
+    case "$shell_name" in
+        zsh)
+            echo "$HOME/.zshrc"
+            echo "$HOME/.zprofile"
+            ;;
+        bash)
+            echo "$HOME/.bash_profile"
+            echo "$HOME/.bashrc"
+            ;;
+        fish)
+            echo "$HOME/.config/fish/config.fish"
+            ;;
+        *)
+            echo "$HOME/.bashrc"
+            echo "$HOME/.bash_profile"
+            echo "$HOME/.zshrc"
+            ;;
+    esac
+}
+
+# role_prompt — interactive role selection (used during setup if OPENMONO_ROLE not set)
+# Sets $OPENMONO_ROLE to: full, inference, or agent
+role_prompt() {
+    if [[ -n "${OPENMONO_ROLE:-}" ]]; then
+        return 0  # Already set, skip prompt
+    fi
+
+    echo ""
+    echo "  What do you want to install on this machine?"
+    echo ""
+    echo "  1) Both — agent + inference server on one box (single-box mode)"
+    echo "  2) Inference server only — GPU box that runs the model"
+    echo "             (pair with a separate agent box via openmono tunnel)"
+    echo "  3) Agent only — laptop/workstation that talks to a remote inference server"
+    echo "             (dual-box mode; point at inference box with openmono config)"
+    echo ""
+    while true; do
+        printf "  Enter 1, 2 or 3 [default: 1]: "
+        read -r _role_choice
+        _role_choice="${_role_choice:-1}"
+        case "$_role_choice" in
+            1) OPENMONO_ROLE=full      ; break ;;
+            2) OPENMONO_ROLE=inference ; break ;;
+            3) OPENMONO_ROLE=agent     ; break ;;
+            *) echo "  Please enter 1, 2, or 3." ;;
+        esac
+    done
+    export OPENMONO_ROLE
+    echo ""
+}

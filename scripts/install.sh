@@ -20,6 +20,7 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="$(dirname "$SCRIPT_DIR")"  # repo root (parent of scripts/)
 # shellcheck source=lib/log.sh
 source "$SCRIPT_DIR/lib/log.sh"
 
@@ -32,43 +33,11 @@ source "$SCRIPT_DIR/lib/log.sh"
 #   (c) but the user IS in the docker group at the system level,
 # then re-exec ourselves via `sg docker` so the group IS active in the
 # subshell. Silent if already fine.
-if [[ -z "${OPENMONO_DOCKER_SG_REEXEC:-}" ]] \
-   && command -v docker &>/dev/null \
-   && ! docker info &>/dev/null 2>&1 \
-   && command -v getent &>/dev/null \
-   && getent group docker 2>/dev/null | grep -qw "$(id -un)"; then
-    echo "[INFO] Activating docker group for this session via 'sg docker'..."
-    export OPENMONO_DOCKER_SG_REEXEC=1
-    exec sg docker -c "bash \"$0\" $*"
-fi
 
 # Role selector — drives which of the 8 install steps actually run.
 # If the caller (openmono setup) already exported OPENMONO_ROLE, use it.
-# Otherwise prompt — this handles the ./scripts/install.sh direct-run path
-# where the openmono CLI doesn't exist yet.
-if [[ -z "${OPENMONO_ROLE:-}" ]]; then
-    echo ""
-    echo "  What do you want to install on this machine?"
-    echo ""
-    echo "  1) Both — agent + inference server on one box (single-box mode)"
-    echo "  2) Inference server only — GPU box that runs the model"
-    echo "             (pair with a separate agent box via openmono tunnel)"
-    echo "  3) Agent only — laptop/workstation that talks to a remote inference server"
-    echo "             (dual-box mode; point at inference box with openmono config)"
-    echo ""
-    while true; do
-        printf "  Enter 1, 2 or 3 [default: 1]: "
-        read -r _role_choice
-        _role_choice="${_role_choice:-1}"
-        case "$_role_choice" in
-            1) OPENMONO_ROLE=full      ; break ;;
-            2) OPENMONO_ROLE=inference ; break ;;
-            3) OPENMONO_ROLE=agent     ; break ;;
-            *) echo "  Please enter 1, 2, or 3." ;;
-        esac
-    done
-    echo ""
-fi
+# Otherwise prompt — this handles the direct-run path where openmono CLI isn't available yet.
+role_prompt
 
 case "$OPENMONO_ROLE" in
     full|inference|agent) ;;
@@ -163,35 +132,11 @@ check_prerequisites() {
             printf "  ${YELLOW}⚠${NC}  %s\n" "$w"
         done
         echo ""
-        # Docker permission issue is critical - can't continue
-        if ! docker info &>/dev/null 2>&1; then
-            err "Docker is installed but not accessible without sudo."
-            err "This will cause the installation to fail."
-            echo ""
-            err "To fix this, run one of the following:"
-            err "  1. newgrp docker              (if already in docker group)"
-            err "  2. sudo usermod -aG docker \$USER && newgrp docker"
-            err "  3. Log out and back in"
-            echo ""
-            die "Cannot continue without docker access."
-        fi
     fi
 
     ok "All prerequisites satisfied"
 }
 
-# ── Docker group auto-activation ─────────────────────────────────────────────
-# If docker is installed but not accessible (user was just added to the group by
-# install_prereqs.sh), re-exec this script under 'sg docker' so all docker
-# commands work without sudo — no manual 'newgrp docker' step required.
-if command -v docker &>/dev/null && ! docker info &>/dev/null 2>&1; then
-    if id -nG 2>/dev/null | grep -qw docker && command -v sg &>/dev/null; then
-        if sg docker -c "docker info" &>/dev/null 2>&1; then
-            info "Docker group not yet active — re-launching installer with it active..."
-            exec sg docker -- bash "$0" "$@"
-        fi
-    fi
-fi
 
 info "Checking prerequisites..."
 check_prerequisites
@@ -611,27 +556,10 @@ fi  # End of Step 8 (skipped on agent role)
 # IMPORTANT: we use a PATH entry (not an alias) because an alias would shadow
 # all subcommands with a single fixed invocation.
 
-for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    if [ -f "$rc" ]; then
-        # Clean up any prior OpenMono block, including legacy alias forms.
-        if grep -q "# OpenMono.ai" "$rc"; then
-            # Remove from "# OpenMono.ai" up to the next blank line
-            sed -i '/# OpenMono.ai/,/^$/d' "$rc"
-        fi
-        # Also strip any stale top-level `alias openmono=` line from older installs
-        sed -i '/^alias openmono=/d' "$rc"
+# Shell rc file updates are handled by openmono cmd_setup after installation completes
+# This ensures we only update the appropriate files for the user's actual shell
 
-        {
-            echo ""
-            echo "# OpenMono.ai"
-            echo "export LLAMA_PORT=${LLAMA_PORT:-7474}"
-            echo "export PATH=\"$INSTALL_DIR:\$PATH\""
-        } >> "$rc"
-        detail "PATH updated in $(basename "$rc")"
-    fi
-done
-
-# Also install a symlink to /usr/local/bin when possible so the CLI is
+# Install a symlink to /usr/local/bin when possible so the CLI is
 # immediately available (no shell reload needed). Soft-fail if not writable.
 if [ -w /usr/local/bin ] || [ -n "${SUDO:-}" ]; then
     if [ -w /usr/local/bin ]; then
@@ -654,40 +582,31 @@ echo ""
 case "$OPENMONO_ROLE" in
     full)
         echo "  llama-server port : ${LLAMA_PORT:-7474}"
-        echo "  model             : ${MODEL_FILE:-n/a}"
         echo "  mode              : $([ "${HAS_GPU:-false}" = true ] && echo GPU || echo CPU)"
-        echo ""
-        echo "Next steps:"
-        echo "  1. source ~/.bashrc        # Reload shell"
-        echo "  2. cd your-project/"
-        echo "  3. openmono agent          # Start the coding agent"
         ;;
     inference)
         echo "  llama-server port : ${LLAMA_PORT:-7474}"
-        echo "  model             : ${MODEL_FILE:-n/a}"
         echo "  mode              : $([ "${HAS_GPU:-false}" = true ] && echo GPU || echo CPU)"
-        echo ""
-        echo "This machine is now the inference server. To make it reachable"
-        echo "from an agent box over the internet, connect it to a relay server."
-        echo "Need a relay? Sign up for FREE at https://app.openmonoagent.ai to get started!"
-        echo ""
-        echo "Already have your token? Run the following to set up the tunnel:"
-        echo "  openmono tunnel setup"
-        echo ""
         ;;
     agent)
-        echo "  agent binary : built in Docker (openmono-agent image)"
-        echo ""
-        echo "Next steps:"
-        echo "  1. source ~/.bashrc        # Reload shell"
-        echo "  2. Point this agent at your inference server:"
-        echo "     Get the commands from the inference server setup instructions."
-        echo "     Example:"
-        echo "        openmono config set llm.endpoint http://<server>:<port>"
-        echo "        openmono config set llm.api_key  <token>"
-        echo "  3. cd your-project/ && openmono agent"
-        echo ""        
+        echo "  role              : Agent only (dual-box mode)"
         ;;
 esac
 echo ""
 show_log_location
+
+# ── Done ──────────────────────────────────────────────────────────────────────
+# The shell restart and docker group activation is handled by openmono cmd_setup
+# so that the post-install guidance is shown before the shell restarts.
+
+# Write environment to the file passed by openmono cmd_setup
+if [[ -n "${OPENMONO_ENV_FILE:-}" ]]; then
+    cat > "$OPENMONO_ENV_FILE" <<ENVEOF
+export INSTALL_DIR="$INSTALL_DIR"
+export LLAMA_PORT="${LLAMA_PORT:-7474}"
+export OPENMONO_ROLE="$OPENMONO_ROLE"
+ENVEOF
+    _log "Wrote install environment to: $OPENMONO_ENV_FILE"
+else
+    warn "OPENMONO_ENV_FILE not set (openmono cmd_setup should have set this)"
+fi

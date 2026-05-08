@@ -15,33 +15,14 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INSTALL_DIR="$(dirname "$SCRIPT_DIR")"  # repo root (parent of scripts/)
 # shellcheck source=lib/log.sh
 source "$SCRIPT_DIR/lib/log.sh"
 
-# Role selector — drives which of the 8 install steps actually run.
-if [[ -z "${OPENMONO_ROLE:-}" ]]; then
-    echo ""
-    echo "  What do you want to install on this machine?"
-    echo ""
-    echo "  1) Both — agent + inference server on one box (single-box mode)"
-    echo "  2) Inference server only — GPU box that runs the model"
-    echo "             (pair with a separate agent box via openmono tunnel)"
-    echo "  3) Agent only — laptop/workstation that talks to a remote inference server"
-    echo "             (dual-box mode; point at inference box with openmono config)"
-    echo ""
-    while true; do
-        printf "  Enter 1, 2 or 3 [default: 1]: "
-        read -r _role_choice
-        _role_choice="${_role_choice:-1}"
-        case "$_role_choice" in
-            1) OPENMONO_ROLE=full      ; break ;;
-            2) OPENMONO_ROLE=inference ; break ;;
-            3) OPENMONO_ROLE=agent     ; break ;;
-            *) echo "  Please enter 1, 2, or 3." ;;
-        esac
-    done
-    echo ""
-fi
+# Role selector — drives which of the install steps actually run.
+# If the caller (openmono setup) already exported OPENMONO_ROLE, use it.
+# Otherwise prompt — this handles the direct-run path where openmono CLI isn't available yet.
+role_prompt
 
 case "$OPENMONO_ROLE" in
     full|inference|agent) ;;
@@ -428,27 +409,8 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
 fi
 
 # ── Shell integration ─────────────────────────────────────────────────────────
-# Put the openmono CLI on PATH so `openmono <cmd>` resolves to the repo script.
-# On macOS, prioritize ~/.zshrc (default shell), also update ~/.bash_profile.
-
-for rc in "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.bashrc"; do
-    if [ -f "$rc" ]; then
-        # Clean up any prior OpenMono block
-        if grep -q "# OpenMono.ai" "$rc"; then
-            sed -i '' '/# OpenMono.ai/,/^$/d' "$rc"
-        fi
-        # Strip any stale top-level `alias openmono=` line
-        sed -i '' '/^alias openmono=/d' "$rc"
-
-        {
-            echo ""
-            echo "# OpenMono.ai"
-            echo "export LLAMA_PORT=${LLAMA_PORT:-7474}"
-            echo "export PATH=\"$INSTALL_DIR:\$PATH\""
-        } >> "$rc"
-        detail "PATH updated in $(basename "$rc")"
-    fi
-done
+# Shell rc file updates are handled by openmono cmd_setup after installation completes
+# This ensures we only update the appropriate files for the user's actual shell
 
 # Symlink to /usr/local/bin if writable (standard on both Intel and Apple Silicon Macs)
 if [ -w /usr/local/bin ]; then
@@ -463,47 +425,38 @@ fi
 
 echo ""
 printf "${GREEN}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
-printf "${GREEN}${BOLD}  Installation Complete${NC} (role: %s, platform: macOS)\n" "$OPENMONO_ROLE"
+printf "${GREEN}${BOLD}  Installation Complete${NC} (role: %s)\n" "$OPENMONO_ROLE"
 printf "${GREEN}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
 echo ""
 
 case "$OPENMONO_ROLE" in
     full)
         echo "  llama-server port : ${LLAMA_PORT:-7474}"
-        echo "  model             : ${MODEL_FILE:-n/a}"
-        echo "  mode              : CPU (Docker Linux VM)"
-        echo ""
-        echo "Next steps:"
-        echo "  1. source ~/.zshrc         # Reload shell"
-        echo "  2. cd your-project/"
-        echo "  3. openmono agent          # Start the coding agent"
+        echo "  mode              : CPU (Docker runs in Linux VM)"
         ;;
     inference)
         echo "  llama-server port : ${LLAMA_PORT:-7474}"
-        echo "  model             : ${MODEL_FILE:-n/a}"
-        echo "  mode              : CPU (Docker Linux VM)"
-        echo ""
-        echo "This machine is now the inference server. To make it reachable"
-        echo "from an agent box over the internet, connect it to a relay server."
-        echo "Need a relay? Sign up for FREE at https://app.openmonoagent.ai to get started!"
-        echo ""
-        echo "Already have your token? Run the following to set up the tunnel:"
-        echo "  openmono tunnel setup"
-        echo ""
+        echo "  mode              : CPU (Docker runs in Linux VM)"
         ;;
     agent)
-        echo "  agent binary : built in Docker (openmono-agent image)"
-        echo ""
-        echo "Next steps:"
-        echo "  1. source ~/.zshrc         # Reload shell"
-        echo "  2. Point this agent at your inference server:"
-        echo "     Get the commands from the inference server setup instructions."
-        echo "     Example:"
-        echo "        openmono config set llm.endpoint http://<server>:<port>"
-        echo "        openmono config set llm.api_key  <token>"
-        echo "  3. cd your-project/ && openmono agent"
-        echo ""        
+        echo "  role              : Agent only (dual-box mode)"
         ;;
 esac
 echo ""
 show_log_location
+
+# ── Done ──────────────────────────────────────────────────────────────────────
+# The shell restart and docker group activation is handled by openmono cmd_setup
+# so that the post-install guidance is shown before the shell restarts.
+
+# Write environment to the file passed by openmono cmd_setup
+if [[ -n "${OPENMONO_ENV_FILE:-}" ]]; then
+    cat > "$OPENMONO_ENV_FILE" <<ENVEOF
+export INSTALL_DIR="$INSTALL_DIR"
+export LLAMA_PORT="${LLAMA_PORT:-7474}"
+export OPENMONO_ROLE="$OPENMONO_ROLE"
+ENVEOF
+    _log "Wrote install environment to: $OPENMONO_ENV_FILE"
+else
+    warn "OPENMONO_ENV_FILE not set (openmono cmd_setup should have set this)"
+fi
