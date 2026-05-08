@@ -109,12 +109,13 @@ cmd_help() {
     printf "  %-14s %s\n" "status"  "Show container + GPU + model status"
     echo ""
     echo "Inference box (frpc tunnel to the relay — dual-box only):"
-    printf "  %-14s %s\n" "tunnel setup"   "Install frpc + systemd unit (prompts for relay signup values)"
-    printf "  %-14s %s\n" "tunnel start"   "Start the frpc tunnel"
-    printf "  %-14s %s\n" "tunnel stop"    "Stop the frpc tunnel"
-    printf "  %-14s %s\n" "tunnel restart" "Restart the frpc tunnel"
-    printf "  %-14s %s\n" "tunnel status"  "Show tunnel state + configured target"
-    printf "  %-14s %s\n" "tunnel logs"    "Tail frpc logs (journalctl -u frpc)"
+    printf "  %-14s %s\n" "tunnel setup"      "Install frpc + systemd unit (prompts for relay signup values)"
+    printf "  %-14s %s\n" "tunnel rotate-key" "Rotate LLAMA_API_KEY and restart llama-server"
+    printf "  %-14s %s\n" "tunnel start"      "Start the frpc tunnel"
+    printf "  %-14s %s\n" "tunnel stop"       "Stop the frpc tunnel"
+    printf "  %-14s %s\n" "tunnel restart"    "Restart the frpc tunnel"
+    printf "  %-14s %s\n" "tunnel status"     "Show tunnel state + configured target"
+    printf "  %-14s %s\n" "tunnel logs"       "Tail frpc logs (journalctl -u frpc)"
     echo ""
     echo "Global flags:"
     printf "  %-14s %s\n" "--verbose, -v" "Enable verbose/debug output (forwarded to the agent)"
@@ -832,6 +833,63 @@ cmd_tunnel() {
             tunnel_require_systemd
             sudo journalctl -u frpc -f
             ;;
+        rotate-key)
+            local env_file="$REPO_DIR/docker/.env"
+            local relay_cache="$HOME/.openmono/relay.json"
+
+            if [[ ! -f "$env_file" ]]; then
+                err "docker/.env not found. Run 'openmono tunnel setup' first."
+                return 1
+            fi
+
+            local new_key
+            new_key="$(openssl rand -hex 24)"
+
+            # Write new key to docker/.env
+            local tmp
+            tmp="$(mktemp)"
+            grep -v '^LLAMA_API_KEY=' "$env_file" > "$tmp" || true
+            echo "LLAMA_API_KEY=$new_key" >> "$tmp"
+            mv "$tmp" "$env_file"
+            chmod 0600 "$env_file"
+            ok "LLAMA_API_KEY rotated in docker/.env"
+
+            # Restart llama-server to enforce the new key immediately
+            if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
+                if (cd "$REPO_DIR/docker" && docker compose ps --services 2>/dev/null | grep -q '^llama-server$'); then
+                    info "Restarting llama-server with new API key..."
+                    (cd "$REPO_DIR/docker" && docker compose restart llama-server) || \
+                        warn "Restart failed — run manually: cd docker && docker compose restart llama-server"
+                    ok "llama-server restarted"
+                else
+                    warn "llama-server is not running — start it with: openmono start"
+                fi
+            else
+                warn "docker compose not found — restart llama-server manually to enforce the new key"
+            fi
+
+            # Read endpoint from relay cache for convenience
+            local endpoint=""
+            if [[ -f "$relay_cache" ]]; then
+                local frps_addr remote_port
+                frps_addr="$(jq -r '.frpsAddress // empty' "$relay_cache" 2>/dev/null)"
+                remote_port="$(jq -r '.remotePort // empty' "$relay_cache" 2>/dev/null)"
+                [[ -n "$frps_addr" && -n "$remote_port" ]] && \
+                    endpoint="http://$frps_addr:$remote_port"
+            fi
+
+            echo ""
+            printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+            printf "${BLUE}${BOLD}  API Key Rotated${NC}\n"
+            printf "${BLUE}%s${NC}\n" "$(printf '─%.0s' $(seq 1 60))"
+            echo ""
+            echo "  Run the following on the agent box to apply the new key:"
+            echo ""
+            [[ -n "$endpoint" ]] && \
+                printf "    ${BOLD}openmono config set llm.endpoint  %s${NC}\n" "$endpoint"
+            printf "    ${BOLD}openmono config set llm.api_key   %s${NC}\n" "$new_key"
+            echo ""
+            ;;
         help|--help|-h|"")
             echo "Usage: openmono tunnel <subcommand>"
             echo ""
@@ -840,8 +898,11 @@ cmd_tunnel() {
             echo ""
             echo "  setup       Install frpc + systemd unit; prompts for your relay"
             echo "              signup values (frpsAddress, relayToken, remotePort,"
-            echo "              proxyPrefix). Also generates a fresh LLAMA_API_KEY"
-            echo "              and restarts llama-server so it picks it up."
+            echo "              proxyPrefix). Preserves existing LLAMA_API_KEY."
+            echo "  rotate-key  Generate a new LLAMA_API_KEY, write it to docker/.env,"
+            echo "              and restart llama-server. Use when credentials are"
+            echo "              compromised. Prints the config set commands for the"
+            echo "              agent box."
             echo "  start       systemctl start frpc"
             echo "  stop        systemctl stop frpc"
             echo "  restart     systemctl restart frpc"
