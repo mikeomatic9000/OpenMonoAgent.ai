@@ -650,39 +650,6 @@ cmd_graphify() {
     bash "$REPO_DIR/scripts/setup-graphify.sh" "${@}"
 }
 
-cmd_setup_tunnel() {
-    case "${1:-}" in
-        --inference)
-            warn "'openmono setup tunnel --inference' is deprecated — use 'openmono tunnel setup'."
-            bash "$REPO_DIR/scripts/setup-tunnel-inference.sh"
-            ;;
-        --help|-h|"")
-            echo "Usage: openmono setup tunnel --inference    (deprecated alias for: openmono tunnel setup)"
-            echo ""
-            echo "  --inference  Run on the inference box (where llama-server runs)."
-            echo "               Installs frpc, prompts for your openmonoagent.ai signup"
-            echo "               values (frpsAddress, remotePort, relayToken, proxyPrefix),"
-            echo "               generates a fresh LLAMA_API_KEY, and restarts llama-server."
-            echo ""
-            echo "Prefer: openmono tunnel setup"
-            echo ""
-            echo "Typical flow:"
-            echo "  1. Sign up at https://app.openmonoagent.ai to get your relay connection details."
-            echo "     You will receive a relayToken, remotePort, proxyPrefix, and frpsAddress."
-            echo "  2. openmono setup tunnel --inference  (on the inference box)"
-            echo "  3. On the agent box, copy the llm.endpoint and llm.api_key values"
-            echo "     printed by step 2 into your config:"
-            echo "       openmono config set llm.endpoint http://<frpsAddress>:<remotePort>"
-            echo "       openmono config set llm.api_key  <llama_api_key>"
-            ;;
-        *)
-            err "Unknown tunnel flag: $1"
-            echo "Run: openmono setup tunnel --help"
-            return 1
-            ;;
-    esac
-}
-
 cmd_config() {
     local settings="$HOME/.openmono/settings.json"
 
@@ -961,15 +928,7 @@ else
 fi
 
 case "$COMMAND" in
-    setup)
-        # Nested: `openmono setup tunnel ...` dispatches to tunnel helper.
-        if [[ "${1:-}" == "tunnel" ]]; then
-            shift
-            cmd_setup_tunnel "$@"
-        else
-            cmd_setup "$@"
-        fi
-        ;;
+    setup)          cmd_setup "$@";;
     start)          cmd_start ;;
     stop)           cmd_stop ;;
     restart)        cmd_restart ;;
