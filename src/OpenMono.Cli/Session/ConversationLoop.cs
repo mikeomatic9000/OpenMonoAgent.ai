@@ -33,6 +33,8 @@ public sealed class ConversationLoop : IDisposable
     private readonly ToolResultCache _cache;
     private readonly ArtifactStore _artifactStore;
     private readonly IAcpEventSink? _sink;
+    private readonly IToolExecutor? _executor;
+    private readonly IReadOnlyList<ITool>? _toolSubset;
 
     private readonly DoomLoopDetector _doomLoop = new();
 
@@ -54,7 +56,9 @@ public sealed class ConversationLoop : IDisposable
         ToolResultCache? cache = null,
         ArtifactStore? artifactStore = null,
         Checkpointer? checkpointer = null,
-        IAcpEventSink? sink = null)
+        IAcpEventSink? sink = null,
+        IToolExecutor? executor = null,
+        IReadOnlyList<ITool>? toolSubset = null)
     {
         _llm = llm;
         _tools = tools;
@@ -73,6 +77,8 @@ public sealed class ConversationLoop : IDisposable
         _cache = cache ?? new ToolResultCache();
         _artifactStore = artifactStore ?? ArtifactStore.ForSession(session, config.DataDirectory);
         _sink = sink;
+        _executor = executor;
+        _toolSubset = toolSubset;
     }
 
     public void Dispose()
@@ -82,11 +88,23 @@ public sealed class ConversationLoop : IDisposable
         _artifactStore.Dispose();
     }
 
-    public async Task RunTurnAsync(string userInput, CancellationToken ct)
+    public Task RunTurnAsync(string userInput, CancellationToken ct)
     {
-        _doomLoop.Reset();
         _session.AddMessage(new Message { Role = MessageRole.User, Content = userInput });
         _session.TurnCount++;
+        return RunTurnInternalAsync(ct);
+    }
+
+    /// <summary>
+    /// Resume an ACP turn after AcpTurnRunner has appended Tool messages for the client's tool_result
+    /// POST. Behaves like RunTurnAsync minus the user-message append and TurnCount increment — the
+    /// LLM picks up the existing [user, assistant+tool_calls, tool, ...] history.
+    /// </summary>
+    public Task ContinueTurnAsync(CancellationToken ct) => RunTurnInternalAsync(ct);
+
+    private async Task RunTurnInternalAsync(CancellationToken ct)
+    {
+        _doomLoop.Reset();
         _liveFeedback?.BeginTurn();
 
         try
@@ -119,9 +137,10 @@ public sealed class ConversationLoop : IDisposable
             await RunCompactionAsync(lastPromptTokens, customInstructions: null, ct);
         }
 
+        var allowedToolNames = (_toolSubset?.Select(t => t.Name) ?? _tools.All.Select(t => t.Name)).ToArray();
         var toolDefs = _session.Meta.PlanMode
-            ? _tools.BuildToolDefinitionsFor(_tools.All.Where(t => t.IsReadOnly).Select(t => t.Name))
-            : _tools.BuildToolDefinitions();
+            ? _tools.BuildToolDefinitionsFor(allowedToolNames.Where(n => _tools.Resolve(n)?.IsReadOnly == true))
+            : _tools.BuildToolDefinitionsFor(allowedToolNames);
         var thinking = _session.Meta.ThinkingEnabled;
         var options = new LlmOptions
         {
@@ -232,9 +251,11 @@ public sealed class ConversationLoop : IDisposable
                     if (tool is not null && tool.IsConcurrencySafe && tool.IsReadOnly)
                     {
                         _output.WriteDebug($"[P2.4] Starting {call.Name} while streaming...");
-                        inFlightTasks[call.Id] = Task.Run(
-                            () => ExecuteSingleToolAsync(call, tool, context, siblingAbortCts.Token),
-                            siblingAbortCts.Token);
+                        inFlightTasks[call.Id] = _executor is not null
+                            ? _executor.ExecuteAsync(call, tool, context, siblingAbortCts.Token)
+                            : Task.Run(
+                                () => ExecuteSingleToolAsync(call, tool, context, siblingAbortCts.Token),
+                                siblingAbortCts.Token);
                     }
                 }
 
@@ -546,6 +567,22 @@ public sealed class ConversationLoop : IDisposable
         CancellationTokenSource siblingAbortCts,
         CancellationToken ct)
     {
+        if (_executor?.PausesAfterEmit == true)
+        {
+            // ACP path: emit every tool_call to the client and register a pending TCS on the session,
+            // then throw so AcpTurnRunner can emit awaiting_tool_results and close the SSE stream.
+            // The next /turn POST with tool_results resolves the TCS entries; AcpTurnRunner adds the
+            // tool messages itself and re-enters via ContinueTurnAsync, so the orphaned Tasks here
+            // can complete in the background without anyone awaiting them.
+            foreach (var call in toolCalls)
+            {
+                if (inFlightTasks.ContainsKey(call.Id)) continue;
+                var tool = _tools.Resolve(call.Name);
+                inFlightTasks[call.Id] = _executor.ExecuteAsync(call, tool, context, siblingAbortCts.Token);
+            }
+            throw new OpenMono.Acp.PendingToolResultsException(toolCalls);
+        }
+
         var results = new ToolResult[toolCalls.Count];
         var readOnlyPending = new List<(int Index, ToolCall Call, ITool Tool)>();
         var writeable = new List<(int Index, ToolCall Call, ITool Tool)>();

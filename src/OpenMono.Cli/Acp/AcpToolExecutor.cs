@@ -16,6 +16,8 @@ public sealed class AcpToolExecutor : IToolExecutor
         _resultsTimeout = resultsTimeout;
     }
 
+    public bool PausesAfterEmit => true;
+
     public async Task<ToolResult> ExecuteAsync(ToolCall call, ITool? tool, ToolContext ctx, CancellationToken ct)
     {
         // 1. Stream the tool_call event to the connected client.
