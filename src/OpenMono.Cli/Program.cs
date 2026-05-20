@@ -342,7 +342,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
             continue;
         }
 
-        var resolvedInput = ResolveAtReferences(input, config.WorkingDirectory);
+        var (resolvedInput, imageParts) = ResolveAtReferences(input, config.WorkingDirectory);
 
         ansiTui?.AddUserMessage(input);
         using var turnCts = new CancellationTokenSource();
@@ -358,7 +358,7 @@ static async Task RunAgentAsync(string? endpoint, string? model, string? workdir
 
         try
         {
-            await loop.RunTurnAsync(resolvedInput, turnCts.Token);
+            await loop.RunTurnAsync(resolvedInput, imageParts, turnCts.Token);
         }
         catch (OperationCanceledException)
         {
@@ -752,14 +752,15 @@ static string DisplayNameFromPath(string modelPath)
         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 }
 
-static string ResolveAtReferences(string input, string workDir)
+static (string text, List<ImagePart>? images) ResolveAtReferences(string input, string workDir)
 {
     var matches = System.Text.RegularExpressions.Regex.Matches(input, @"@([\w/\\.\-]+)");
-    if (matches.Count == 0) return input;
+    if (matches.Count == 0) return (input, null);
 
     var workDirNorm = Path.GetFullPath(workDir).TrimEnd(Path.DirectorySeparatorChar);
 
     var injections = new System.Text.StringBuilder();
+    List<ImagePart>? images = null;
     var resolved = 0;
     foreach (System.Text.RegularExpressions.Match m in matches)
     {
@@ -777,20 +778,32 @@ static string ResolveAtReferences(string input, string workDir)
         if (!File.Exists(fullPath)) continue;
         try
         {
-            var contents = File.ReadAllText(fullPath);
-            var ext = Path.GetExtension(relPath).TrimStart('.');
-            injections.AppendLine($"<file path=\"{relPath}\">");
-            if (!string.IsNullOrEmpty(ext)) injections.AppendLine($"```{ext}");
-            injections.AppendLine(contents);
-            if (!string.IsNullOrEmpty(ext)) injections.AppendLine("```");
-            injections.AppendLine("</file>");
-            resolved++;
+            var ext = Path.GetExtension(relPath).TrimStart('.').ToLower();
+            if (ext is "png" or "jpg" or "jpeg" or "gif" or "webp")
+            {
+                var (imageBytes, mime) = ImageUtils.SmartResize(File.ReadAllBytes(fullPath), ImageUtils.MimeFromExt(ext));
+                var b64 = Convert.ToBase64String(imageBytes);
+                (images ??= []).Add(new ImagePart($"data:{mime};base64,{b64}"));
+                input = input.Replace(m.Value, "");
+                resolved++;
+            }
+            else
+            {
+                var contents = File.ReadAllText(fullPath);
+                injections.AppendLine($"<file path=\"{relPath}\">");
+                if (!string.IsNullOrEmpty(ext)) injections.AppendLine($"```{ext}");
+                injections.AppendLine(contents);
+                if (!string.IsNullOrEmpty(ext)) injections.AppendLine("```");
+                injections.AppendLine("</file>");
+                resolved++;
+            }
         }
         catch { }
     }
 
-    if (resolved == 0) return input;
-    return injections.ToString() + "\n" + input;
+    if (resolved == 0) return (input, null);
+    var text = injections.Length > 0 ? injections.ToString() + "\n" + input : input;
+    return (text, images);
 }
 
 static string? ResolveRefDirectory(AppConfig config)

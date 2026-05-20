@@ -78,10 +78,23 @@ public sealed class ConversationLoop : IDisposable
         _artifactStore.Dispose();
     }
 
-    public async Task RunTurnAsync(string userInput, CancellationToken ct)
+    public async Task RunTurnAsync(string userInput, IReadOnlyList<ContentPart>? imageParts, CancellationToken ct)
     {
         _doomLoop.Reset();
-        _session.AddMessage(new Message { Role = MessageRole.User, Content = userInput });
+        _session.AddMessage(new Message {
+            Role = MessageRole.User,
+            Content = imageParts is { Count: > 0 }
+                ? $"[{imageParts.Count} image(s)] {userInput}"
+                : userInput,
+            ContentParts = imageParts is { Count: > 0 }
+                ? [new TextPart(userInput), .. imageParts]
+                : null
+        });
+        if (imageParts is { Count: > 0 } && !_config.VisionEnabled)
+        {
+            _output.WriteWarning("Image attached but vision is not enabled — re-run 'openmono setup'.");
+            return;
+        }
         _session.TurnCount++;
         _liveFeedback?.BeginTurn();
 
@@ -320,6 +333,19 @@ public sealed class ConversationLoop : IDisposable
                     Content = content,
                 });
             }
+
+            var pendingImages = results
+                .Where(r => r.Images is { Count: > 0 })
+                .SelectMany(r => r.Images!)
+                .ToList();
+            if (pendingImages.Count > 0)
+                _session.AddMessage(new Message
+                {
+                    Role = MessageRole.User,
+                    Content = $"[{pendingImages.Count} image(s) from tool calls]",
+                    ContentParts = [new TextPart("Images retrieved by tools:"), .. pendingImages],
+                });
+
             if (results.Any(r => r.BreakTurn))
             {
                 if (_session.Meta.LastPlan is { Length: > 0 } plan)
@@ -797,5 +823,6 @@ public sealed class ConversationLoop : IDisposable
         BeginResponse = _output.StartAssistantResponse,
         EndResponse = () => _output.EndAssistantResponse(),
         StreamText = _output.StreamText,
+        OnDebug = msg => { _output.WriteDebug(msg); Log.Debug(msg); },
     };
 }

@@ -14,6 +14,8 @@ public sealed class AppConfig
     public bool AutoDetectCodeGraph { get; set; } = true;
     public bool Verbose { get; set; } = false;
     public bool ShowDetail { get; set; } = false;
+    public bool VisionEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("OPENMONO_VISION_ENABLED") == "1";
     public string WorkingDirectory { get; set; } = Directory.GetCurrentDirectory();
     public string? HostWorkingDirectory { get; set; }
     public string DataDirectory { get; set; } = Path.Combine(
