@@ -58,13 +58,29 @@ public sealed class ConversationLoop : IDisposable
         Checkpointer? checkpointer = null,
         IAcpEventSink? sink = null,
         IToolExecutor? executor = null,
-        IReadOnlyList<ITool>? toolSubset = null)
+        IReadOnlyList<ITool>? toolSubset = null,
+        IAcpUserInteraction? interaction = null)
     {
         _llm = llm;
         _tools = tools;
-        _permissions = permissions;
         _output = output;
-        _input = input;
+        if (interaction is null)
+        {
+            _input = input;
+            _permissions = permissions;
+        }
+        else
+        {
+            // ACP mode: route AskPermissionAsync / AskUserAsync through the SSE forwarder
+            // instead of the terminal. We swap _input AND rebuild PermissionEngine on
+            // top of the adapter so PermissionEngine.CheckAsync's internal prompt hits
+            // the forwarder. The original `permissions` argument is unused in this
+            // branch — its session-scoped AllowAll cache belongs to the TUI session,
+            // not this ACP session.
+            var adapter = new AcpInputReaderAdapter(interaction);
+            _input = adapter;
+            _permissions = new PermissionEngine(config, output, adapter);
+        }
         _liveFeedback = liveFeedback;
         _config = config;
         _session = session;
