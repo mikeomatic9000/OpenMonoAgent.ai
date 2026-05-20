@@ -36,7 +36,7 @@ CTX_16G=180224       # GPU 16GB   q4_0 KV  (~3.7GB KV + 12GB weights ≈ 16GB)
 CTX_12G=196608       # GPU 12GB   q4_0 KV  (9B weights ~5GB, fits)
 CTX_CPU=196608       # CPU/Vulkan q8_0 KV
 CTX_VISION=172032    # 24GB+ tier + mmproj — 723 MiB free at rest; vision encoder needs ~474 MiB burst
-CTX_VISION_16G=131072 # 16GB tier + mmproj — ~12GB IQ3_XXS + 930MB mmproj leaves ~2.8GB for KV
+CTX_VISION_16G=98304  # 16GB tier + mmproj — ~1GB less KV than 128k, gives vision encoder burst headroom
 
 # MODEL_ACCURACY, MODEL_ALIAS, and _MODEL_LABEL.
 select_model() {
@@ -466,7 +466,7 @@ if [ "$OPENMONO_ROLE" != "agent" ]; then
             _KV_K="q4_0"; _KV_V="q4_0"
             _CTX=$CTX_12G
         fi
-        # mmproj loads ~1GB into VRAM — pull context back to stay within budget.
+        # mmproj loads ~1–2 GB into VRAM — pull context back to stay within budget.
         if [ -n "${MODEL_MMPROJ:-}" ]; then
             _CTX_ORIG=$_CTX
             if [ "$_GPU_TIER" -ge 24 ]; then
@@ -526,8 +526,8 @@ EOF
     if [ -n "${MODEL_MMPROJ:-}" ]; then
     printf "\n  ${BOLD}${CYAN}Vision (enabled by default)${NC}\n"
     printf "     ${DIM}Vision encoder (mmproj) is loaded alongside the model${NC}\n"
-    printf "     ${DIM}  · GPU: uses ~1GB extra VRAM — context reduced $(( _CTX_ORIG / 1024 ))k → $(( _CTX / 1024 ))k to compensate${NC}\n"
-    printf "     ${DIM}  · CPU: uses ~1GB extra RAM — same context reduction applies${NC}\n"
+    printf "     ${DIM}  · GPU: uses ~1–2 GB extra VRAM — context reduced $(( _CTX_ORIG / 1024 ))k → $(( _CTX / 1024 ))k to compensate${NC}\n"
+    printf "     ${DIM}  · CPU: uses ~1–2 GB extra RAM — same context reduction applies${NC}\n"
     printf "     ${DIM}Use: @image.png or @screenshot.png in chat, or ask the agent to read any image file${NC}\n"
     printf "\n     ${DIM}To disable vision and recover $(( (_CTX_ORIG - _CTX) / 1024 ))k extra context:${NC}\n"
     printf "     ${DIM}  1.  docker/.env → MODEL_MMPROJ=  (clear the value)${NC}\n"
@@ -598,8 +598,8 @@ EOF
     if [ -n "${MODEL_MMPROJ:-}" ]; then
     printf "\n  ${BOLD}${CYAN}Vision (enabled by default)${NC}\n"
     printf "     ${DIM}Vision encoder (mmproj) is loaded alongside the model${NC}\n"
-    printf "     ${DIM}  · GPU: uses ~1GB extra VRAM — context reduced $(( _CTX_ORIG / 1024 ))k → $(( CTX_VISION / 1024 ))k to compensate${NC}\n"
-    printf "     ${DIM}  · CPU: uses ~1GB extra RAM — same context reduction applies${NC}\n"
+    printf "     ${DIM}  · GPU: uses ~1–2 GB extra VRAM — context reduced $(( _CTX_ORIG / 1024 ))k → $(( CTX_VISION / 1024 ))k to compensate${NC}\n"
+    printf "     ${DIM}  · CPU: uses ~1–2 GB extra RAM — same context reduction applies${NC}\n"
     printf "     ${DIM}Use: @image.png or @screenshot.png in chat, or ask the agent to read any image file${NC}\n"
     printf "\n     ${DIM}To disable vision and recover $(( (_CTX_ORIG - CTX_VISION) / 1024 ))k extra context:${NC}\n"
     printf "     ${DIM}  1.  docker/.env → MODEL_MMPROJ=  (clear the value)${NC}\n"
