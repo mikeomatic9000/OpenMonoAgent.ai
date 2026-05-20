@@ -9,6 +9,7 @@ namespace OpenMono.Tests.Acp;
 public sealed class AcpSessionStoreTests : IDisposable
 {
     private readonly string _tempDir;
+    private readonly string _sessionsDir;
     private readonly AppConfig _cfg;
     private readonly AcpServerSettings _settings;
 
@@ -16,9 +17,12 @@ public sealed class AcpSessionStoreTests : IDisposable
     {
         _tempDir = Path.Combine(Path.GetTempPath(), "openmono-acp-tests-" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(_tempDir);
+        _sessionsDir = Path.Combine(_tempDir, "acp-sessions");
         _cfg = new AppConfig { DataDirectory = _tempDir };
         _cfg.Llm.Model = "test-model";
-        _settings = new AcpServerSettings { SessionTtlHours = 24 };
+        // Override the default /data/acp-sessions so tests are hermetic regardless of
+        // the host environment (CI, dev machine, container, etc.).
+        _settings = new AcpServerSettings { SessionTtlHours = 24, SessionsDirectory = _sessionsDir };
     }
 
     public void Dispose()
@@ -26,19 +30,19 @@ public sealed class AcpSessionStoreTests : IDisposable
         try { Directory.Delete(_tempDir, recursive: true); } catch { /* best effort */ }
     }
 
+    // ── Create / TryGet / Save / Delete ────────────────────────────────────────
+
     [Fact]
-    public void Create_assigns_id_model_and_clientTools_and_persists_to_disk()
+    public void Create_assigns_id_and_model_and_persists_to_disk()
     {
         using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
 
-        var session = store.Create(model: "gpt-4o",
-            clientTools: new[] { "FileRead", "Bash" }, _cfg);
+        var session = store.Create(model: "gpt-4o", _cfg);
 
         session.Id.Should().StartWith("sess_");
         session.Model.Should().Be("gpt-4o");
-        session.ClientTools.Should().BeEquivalentTo(new[] { "FileRead", "Bash" });
 
-        var diskFile = Path.Combine(_tempDir, "acp-sessions", session.Id + ".json");
+        var diskFile = Path.Combine(_sessionsDir, session.Id + ".json");
         File.Exists(diskFile).Should().BeTrue();
     }
 
@@ -47,10 +51,9 @@ public sealed class AcpSessionStoreTests : IDisposable
     {
         using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
 
-        var session = store.Create(model: null, clientTools: null, _cfg);
+        var session = store.Create(model: null, _cfg);
 
         session.Model.Should().Be("test-model");
-        session.ClientTools.Should().BeEmpty();
     }
 
     [Fact]
@@ -60,7 +63,7 @@ public sealed class AcpSessionStoreTests : IDisposable
         DateTime started;
         using (var store = new AcpSessionStore(_cfg, _settings, startReaper: false))
         {
-            var session = store.Create("gpt-4o", new[] { "FileRead" }, _cfg);
+            var session = store.Create("gpt-4o", _cfg);
             session.TurnCount = 3;
             session.PlanMode = true;
             session.Messages.Add(new Message { Role = MessageRole.User, Content = "Hello" });
@@ -76,7 +79,6 @@ public sealed class AcpSessionStoreTests : IDisposable
         got.Should().NotBeNull();
         got!.Id.Should().Be(id);
         got.Model.Should().Be("gpt-4o");
-        got.ClientTools.Should().BeEquivalentTo(new[] { "FileRead" });
         got.TurnCount.Should().Be(3);
         got.PlanMode.Should().BeTrue();
         got.Messages.Should().HaveCount(1);
@@ -100,10 +102,9 @@ public sealed class AcpSessionStoreTests : IDisposable
     public void PurgeExpired_deletes_in_memory_and_on_disk()
     {
         using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
-        var session = store.Create("gpt-4o", null, _cfg);
-        var path = Path.Combine(_tempDir, "acp-sessions", session.Id + ".json");
+        var session = store.Create("gpt-4o", _cfg);
+        var path = Path.Combine(_sessionsDir, session.Id + ".json");
 
-        // Simulate inactivity older than 1ms.
         session.LastActivityAt = DateTime.UtcNow - TimeSpan.FromHours(1);
         store.Save(session);
 
@@ -116,17 +117,14 @@ public sealed class AcpSessionStoreTests : IDisposable
     [Fact]
     public void TryGet_returns_null_and_deletes_when_session_is_past_ttl()
     {
-        var shortTtl = new AcpServerSettings { SessionTtlHours = 24 }; // ttl positive
-        using var store = new AcpSessionStore(_cfg, shortTtl, startReaper: false);
+        using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
 
-        var session = store.Create("gpt-4o", null, _cfg);
+        var session = store.Create("gpt-4o", _cfg);
         session.LastActivityAt = DateTime.UtcNow - TimeSpan.FromDays(30);
         store.Save(session);
 
-        var got = store.TryGet(session.Id);
-        got.Should().BeNull();
-
-        File.Exists(Path.Combine(_tempDir, "acp-sessions", session.Id + ".json")).Should().BeFalse();
+        store.TryGet(session.Id).Should().BeNull();
+        File.Exists(Path.Combine(_sessionsDir, session.Id + ".json")).Should().BeFalse();
     }
 
     [Fact]
@@ -134,14 +132,11 @@ public sealed class AcpSessionStoreTests : IDisposable
     {
         using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
 
-        var session = store.Create("gpt-4o", null, _cfg);
+        var session = store.Create("gpt-4o", _cfg);
         session.TurnCount = 1;
         store.Save(session);
         session.TurnCount = 2;
         store.Save(session);
-
-        var path = Path.Combine(_tempDir, "acp-sessions", session.Id + ".json");
-        File.Exists(path).Should().BeTrue();
 
         using var reloaded = new AcpSessionStore(_cfg, _settings, startReaper: false);
         reloaded.TryGet(session.Id)!.TurnCount.Should().Be(2);
@@ -153,11 +148,7 @@ public sealed class AcpSessionStoreTests : IDisposable
         using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
 
         var ids = new System.Collections.Concurrent.ConcurrentBag<string>();
-        Parallel.For(0, 100, _ =>
-        {
-            var s = store.Create(null, null, _cfg);
-            ids.Add(s.Id);
-        });
+        Parallel.For(0, 100, _ => ids.Add(store.Create(null, _cfg).Id));
 
         ids.Should().HaveCount(100);
         ids.Distinct().Should().HaveCount(100);
@@ -171,7 +162,7 @@ public sealed class AcpSessionStoreTests : IDisposable
     public async Task Concurrent_Save_on_same_session_does_not_corrupt_disk()
     {
         using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
-        var session = store.Create("gpt-4o", null, _cfg);
+        var session = store.Create("gpt-4o", _cfg);
 
         var t1 = Task.Run(() =>
         {
@@ -191,10 +182,11 @@ public sealed class AcpSessionStoreTests : IDisposable
         });
         await Task.WhenAll(t1, t2);
 
-        var path = Path.Combine(_tempDir, "acp-sessions", session.Id + ".json");
+        var path = Path.Combine(_sessionsDir, session.Id + ".json");
         File.Exists(path).Should().BeTrue();
         var json = File.ReadAllText(path);
-        json.Should().StartWith("{").And.EndWith("}", because: "atomic save must produce a valid JSON document at every observable point");
+        json.Should().StartWith("{").And.EndWith("}",
+            because: "atomic save must produce a valid JSON document at every observable point");
 
         using var reloaded = new AcpSessionStore(_cfg, _settings, startReaper: false);
         reloaded.TryGet(session.Id).Should().NotBeNull();
@@ -204,8 +196,8 @@ public sealed class AcpSessionStoreTests : IDisposable
     public void Delete_removes_session_from_memory_and_disk()
     {
         using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
-        var session = store.Create("gpt-4o", null, _cfg);
-        var path = Path.Combine(_tempDir, "acp-sessions", session.Id + ".json");
+        var session = store.Create("gpt-4o", _cfg);
+        var path = Path.Combine(_sessionsDir, session.Id + ".json");
         File.Exists(path).Should().BeTrue();
 
         store.Delete(session.Id);
@@ -213,4 +205,112 @@ public sealed class AcpSessionStoreTests : IDisposable
         store.TryGet(session.Id).Should().BeNull();
         File.Exists(path).Should().BeFalse();
     }
+
+    // ── Corrupt-file quarantine ────────────────────────────────────────────────
+
+    [Fact]
+    public void Hydrate_quarantines_unparseable_json_as_dot_corrupt()
+    {
+        Directory.CreateDirectory(_sessionsDir);
+        var bogusPath = Path.Combine(_sessionsDir, "sess_garbage.json");
+        File.WriteAllText(bogusPath, "{ this is not valid JSON");
+
+        using var store = new AcpSessionStore(_cfg, _settings, startReaper: false);
+
+        File.Exists(bogusPath).Should().BeFalse("the corrupt file must be renamed");
+        File.Exists(bogusPath + ".corrupt").Should().BeTrue("renamed sidecar should appear");
+        store.TryGet("sess_garbage").Should().BeNull();
+    }
+
+    [Fact]
+    public void Hydrate_skips_corrupt_files_without_throwing()
+    {
+        Directory.CreateDirectory(_sessionsDir);
+        File.WriteAllText(Path.Combine(_sessionsDir, "sess_bad1.json"), "not json");
+        File.WriteAllText(Path.Combine(_sessionsDir, "sess_bad2.json"), "{ \"id\": broken }");
+
+        // Also drop a valid one so we know hydration still surfaces good sessions
+        // even when there are corrupt neighbours.
+        using (var seed = new AcpSessionStore(_cfg, _settings, startReaper: false))
+            seed.Create("gpt-4o", _cfg);
+
+        // Re-hydrate from disk and confirm no throw + valid session still loads.
+        Action ctor = () => { using var _ = new AcpSessionStore(_cfg, _settings, startReaper: false); };
+        ctor.Should().NotThrow();
+    }
+
+    // ── SessionsDirectory fallback ─────────────────────────────────────────────
+
+    [Fact]
+    public void Constructor_falls_back_to_cfg_DataDirectory_when_settings_dir_unwritable()
+    {
+        // Point SessionsDirectory at a path the test process cannot create. On every
+        // POSIX-like OS the test process has permission to read /proc but not to mkdir
+        // arbitrary children of it; on macOS, /System/openmono-... yields the same effect.
+        var unwritable = OperatingSystem.IsWindows()
+            ? @"Z:\definitely\not\writable\openmono-sessions"
+            : "/proc/openmono-sessions-" + Guid.NewGuid().ToString("N");
+        var settings = new AcpServerSettings { SessionTtlHours = 24, SessionsDirectory = unwritable };
+
+        using var store = new AcpSessionStore(_cfg, settings, startReaper: false);
+
+        store.Directory.Should().Be(Path.Combine(_cfg.DataDirectory, "acp-sessions"));
+        Directory.Exists(store.Directory).Should().BeTrue();
+    }
+
+    // ── AcpSession pause-resume primitives ─────────────────────────────────────
+
+    [Fact]
+    public async Task RegisterPause_and_TryResolvePause_complete_the_TCS_with_response()
+    {
+        var session = NewBareSession();
+        var tcs = session.RegisterPause("perm_abc", PendingResponseKind.Permission);
+
+        session.TryResolvePause("perm_abc", new AcpPermissionResponse(Allow: true)).Should().BeTrue();
+        tcs.Task.IsCompletedSuccessfully.Should().BeTrue();
+
+        var response = await tcs.Task;
+        response.Should().BeOfType<AcpPermissionResponse>().Which.Allow.Should().BeTrue();
+    }
+
+    [Fact]
+    public void RegisterPause_with_duplicate_id_throws()
+    {
+        var session = NewBareSession();
+        session.RegisterPause("perm_abc", PendingResponseKind.Permission);
+
+        Action act = () => session.RegisterPause("perm_abc", PendingResponseKind.Permission);
+        act.Should().Throw<InvalidOperationException>().WithMessage("*Duplicate pause id*");
+    }
+
+    [Fact]
+    public void TryResolvePause_returns_false_for_unknown_id()
+    {
+        var session = NewBareSession();
+        session.TryResolvePause("nope", new AcpCancelledResponse()).Should().BeFalse();
+    }
+
+    [Fact]
+    public void CancelAllPending_cancels_outstanding_TCS_and_clears_registry()
+    {
+        var session = NewBareSession();
+        var tcs1 = session.RegisterPause("perm_1", PendingResponseKind.Permission);
+        var tcs2 = session.RegisterPause("ask_1", PendingResponseKind.UserInput);
+        session.PendingIds.Should().BeEquivalentTo("perm_1", "ask_1");
+
+        session.CancelAllPending();
+
+        tcs1.Task.IsCanceled.Should().BeTrue();
+        tcs2.Task.IsCanceled.Should().BeTrue();
+        session.PendingIds.Should().BeEmpty();
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private static AcpSession NewBareSession() => new()
+    {
+        Id = "sess_test",
+        StartedAt = DateTime.UtcNow,
+        Model = "test-model",
+    };
 }

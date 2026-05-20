@@ -4,6 +4,12 @@ using OpenMono.Config;
 
 namespace OpenMono.Acp;
 
+/// <summary>
+/// Disk-backed registry of <see cref="AcpSession"/> instances. Sessions are kept in memory
+/// for the hot path and written through to disk on every <see cref="Save"/> so they survive
+/// container restarts when the caller mounts a named volume at <c>/data</c> (per
+/// <see cref="AcpServerSettings.SessionsDirectory"/>).
+/// </summary>
 public sealed class AcpSessionStore : IDisposable
 {
     private readonly string _dir;
@@ -20,8 +26,7 @@ public sealed class AcpSessionStore : IDisposable
 
     public AcpSessionStore(AppConfig cfg, AcpServerSettings settings, bool startReaper = true)
     {
-        _dir = Path.Combine(cfg.DataDirectory, "acp-sessions");
-        Directory.CreateDirectory(_dir);
+        _dir = ResolveSessionsDirectory(cfg, settings);
         _ttl = TimeSpan.FromHours(settings.SessionTtlHours);
         Hydrate();
         if (startReaper)
@@ -31,7 +36,10 @@ public sealed class AcpSessionStore : IDisposable
         }
     }
 
-    public AcpSession Create(string? model, IReadOnlyList<string>? clientTools, AppConfig cfg)
+    /// <summary>Path the store ultimately resolved to (after settings → fallback chain).</summary>
+    public string Directory => _dir;
+
+    public AcpSession Create(string? model, AppConfig cfg)
     {
         var now = DateTime.UtcNow;
         var session = new AcpSession
@@ -39,7 +47,6 @@ public sealed class AcpSessionStore : IDisposable
             Id = NewSessionId(),
             StartedAt = now,
             Model = model ?? cfg.Llm.Model,
-            ClientTools = clientTools is null ? Array.Empty<string>() : clientTools.ToArray(),
             LastActivityAt = now,
         };
         _sessions[session.Id] = session;
@@ -101,19 +108,62 @@ public sealed class AcpSessionStore : IDisposable
 
     private void Hydrate()
     {
-        foreach (var file in Directory.EnumerateFiles(_dir, "*.json"))
+        foreach (var file in System.IO.Directory.EnumerateFiles(_dir, "*.json"))
         {
             try
             {
                 var json = File.ReadAllText(file);
                 var session = JsonSerializer.Deserialize<AcpSession>(json, JsonOpts);
-                if (session is not null) _sessions[session.Id] = session;
+                if (session is not null)
+                    _sessions[session.Id] = session;
+                else
+                    Quarantine(file, "deserializer returned null");
             }
-            catch
+            catch (JsonException ex)
             {
-                // Corrupt session file; skip. Cannot log here without DI; rely on disk
-                // forensics. T9 may add a structured warning.
+                Quarantine(file, ex.Message);
             }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Transient read errors are not corruption — leave the file alone.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Rename a corrupt JSON file to <c>&lt;id&gt;.json.corrupt</c> so the next startup
+    /// skips it without crashing and a human can inspect it.
+    /// </summary>
+    private void Quarantine(string path, string reason)
+    {
+        _ = reason; // hook for future structured logging
+        try
+        {
+            var corruptPath = path + ".corrupt";
+            if (File.Exists(corruptPath)) File.Delete(corruptPath);
+            File.Move(path, corruptPath);
+        }
+        catch
+        {
+            // Best effort: if the rename fails we still excluded the file from _sessions,
+            // so the store stays consistent in memory.
+        }
+    }
+
+    private static string ResolveSessionsDirectory(AppConfig cfg, AcpServerSettings settings)
+    {
+        // Prefer settings.SessionsDirectory (the container mounts a named volume there).
+        // Fall back to <DataDirectory>/acp-sessions for native runs where /data isn't writable.
+        try
+        {
+            System.IO.Directory.CreateDirectory(settings.SessionsDirectory);
+            return settings.SessionsDirectory;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or DirectoryNotFoundException or IOException)
+        {
+            var fallback = Path.Combine(cfg.DataDirectory, "acp-sessions");
+            System.IO.Directory.CreateDirectory(fallback);
+            return fallback;
         }
     }
 
@@ -124,7 +174,7 @@ public sealed class AcpSessionStore : IDisposable
     private static bool IsValidId(string id)
     {
         if (string.IsNullOrEmpty(id) || !id.StartsWith("sess_", StringComparison.Ordinal)) return false;
-        for (int i = 5; i < id.Length; i++)
+        for (var i = 5; i < id.Length; i++)
         {
             var c = id[i];
             if (!(c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F')) return false;
