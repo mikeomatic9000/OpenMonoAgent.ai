@@ -151,7 +151,24 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         if (text.Length == 0) return [""];
         var logicalLines = text.Count(c => c == '\n') + 1;
         if (logicalLines >= 4)
-            return [$"[{logicalLines} Lines Copied]"];
+        {
+            var indicator = $"[{logicalLines} Lines Copied]";
+            var lastNl = text.LastIndexOf('\n');
+            var tail = lastNl >= 0 ? text[(lastNl + 1)..] : "";
+            if (tail.Length == 0) return [indicator];
+            var rows = new List<string> { indicator };
+            for (var pos = 0; pos < tail.Length; pos += wrapW)
+                rows.Add(tail.Substring(pos, Math.Min(wrapW, tail.Length - pos)));
+            if (rows.Count > 5)
+            {
+                var truncated = new string[5];
+                truncated[0] = indicator;
+                var skip = rows.Count - 4;
+                for (var i = 0; i < 4; i++) truncated[i + 1] = rows[skip + i];
+                return truncated;
+            }
+            return [.. rows];
+        }
         var lines = new List<string>();
         foreach (var segment in text.Split('\n'))
         {
@@ -943,15 +960,36 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             var wrapW       = InputWrapWidth(mainW);
             var wrapped     = WrapInput(text, wrapW);
             var contentRows = Math.Clamp(wrapped.Length, 1, 5);
-            var isCollapsed = wrapped.Length == 1 && wrapped[0].EndsWith("Copied]");
+            var isCollapsedFully    = wrapped.Length == 1 && wrapped[0].EndsWith("Copied]");
+            var isCollapsedWithTail = wrapped.Length > 1 && wrapped[0].EndsWith("Copied]");
 
             var firstContentRow = Math.Max(1, _th - contentRows - 2);
 
             int cursorRow, cursorCol;
-            if (isCollapsed)
+            if (isCollapsedFully)
             {
                 cursorRow = 0;
                 cursorCol = wrapped[0].Length;
+            }
+            else if (isCollapsedWithTail)
+            {
+                var lastNl = text.LastIndexOf('\n');
+                if (cursor > lastNl)
+                {
+                    var tailCursor = cursor - lastNl - 1;
+                    cursorRow = 1 + (tailCursor / wrapW);
+                    cursorCol = tailCursor % wrapW;
+                    if (cursorRow >= contentRows)
+                    {
+                        cursorRow = contentRows - 1;
+                        cursorCol = wrapped[cursorRow].Length;
+                    }
+                }
+                else
+                {
+                    cursorRow = 0;
+                    cursorCol = wrapped[0].Length;
+                }
             }
             else
             {
@@ -981,8 +1019,9 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
             {
                 var absRow   = Math.Max(1, firstContentRow + r);
                 var lineText = r < wrapped.Length ? wrapped[r] : "";
+                var isIndicatorLine = lineText.EndsWith("Copied]");
                 sb.Append($"{E}[{absRow};3H{BgInput}");
-                sb.Append(isCollapsed ? $"{Fk}{IT}{lineText}" : $"{Fw}{lineText}");
+                sb.Append(isIndicatorLine ? $"{Fk}{IT}{lineText}" : $"{Fw}{lineText}");
                 sb.Append(new string(' ', Math.Max(0, wrapW - lineText.Length)));
                 sb.Append(R);
             }
@@ -1157,7 +1196,6 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         var wrapW       = InputWrapWidth(w);
         var wrapped     = WrapInput(currentText, wrapW);
         var contentRows = Math.Clamp(wrapped.Length, 1, 5);
-        var isCollapsed = wrapped.Length == 1 && wrapped[0].EndsWith("Copied]");
         var divider     = $"{BgInput}{Fk}{new string('─', w)}{R}";
 
         _prevInputContentRows = contentRows;
@@ -1168,8 +1206,9 @@ internal sealed partial class AnsiPainter(AppConfig config, SessionState session
         {
             sb.Append($"{E}[{startRow + r + 2};1H");
             var lineText = wrapped.Length > r ? wrapped[r] : "";
+            var isIndicatorLine = lineText.EndsWith("Copied]");
             sb.Append($"{BgInput}{Fbb}│{R}{BgInput} ");
-            sb.Append(isCollapsed ? $"{Fk}{IT}{lineText}" : $"{Fw}{lineText}");
+            sb.Append(isIndicatorLine ? $"{Fk}{IT}{lineText}" : $"{Fw}{lineText}");
             sb.Append(new string(' ', Math.Max(0, wrapW - lineText.Length)));
             sb.Append(R);
         }
