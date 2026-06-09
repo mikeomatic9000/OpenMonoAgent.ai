@@ -47,7 +47,13 @@ for (var i = 0; i < args.Length; i++)
         case "--classic": useTui = false; break;
         case "--no-acp": noAcp = true; break;
         case "--acp-port" when next is not null && int.TryParse(next, out var p): acpPort = p; i++; break;
-        case "--acp-only": acpOnly = true; break;
+        case "--acp-only":
+        {
+            var (val, consumed) = AcpOnlyArg.Parse(next);
+            acpOnly = val;
+            if (consumed) i++;
+            break;
+        }
         case "--help" or "-h":
             Console.WriteLine("OpenMono.ai — Local Coding Agent");
             Console.WriteLine();
@@ -64,8 +70,9 @@ for (var i = 0; i < args.Length; i++)
             Console.WriteLine("  --classic          Force classic scrolling terminal mode");
             Console.WriteLine("  --no-acp           Force-disable the ACP agent server (overrides config)");
             Console.WriteLine("  --acp-port <n>     ACP server port (default: 7475 or acpServer.Port in config)");
-            Console.WriteLine("  --acp-only         Run the ACP server only — no TUI (forces ACP on; container default)");
-            Console.WriteLine("                     Without --acp-only, ACP stays off unless acpServer.enabled = true in config.");
+            Console.WriteLine("  --acp-only [bool]  Run the ACP server only — no TUI. Bare or `--acp-only true` forces");
+            Console.WriteLine("                     it on (container default); `--acp-only false` runs the interactive TUI.");
+            Console.WriteLine("                     Without the flag, ACP stays off unless acpServer.enabled = true in config.");
             Console.WriteLine("  --help, -h         Show this help message");
             Console.WriteLine("  --version          Show version");
             Console.WriteLine();
